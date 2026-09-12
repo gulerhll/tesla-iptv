@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src *; media-src * blob:; img-src * data: blob:;">
+  <title>My IPTV</title>
+  <style>
+    :root { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color-scheme: dark; }
+    body { margin:0; background:#111; color:#eee; }
+    header { position:sticky; top:0; background:#171717; padding:14px; border-bottom:1px solid #333; z-index:5; }
+    h1 { font-size:20px; margin:0 0 10px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    input,button,select { font-size:16px; padding:10px 12px; border-radius:9px; border:1px solid #444; background:#222; color:#eee; }
+    input { min-width:220px; flex:1; }
+    button { cursor:pointer; }
+    main { padding:14px; }
+    #status { margin:10px 0; color:#bbb; }
+    #tabs { display:none; gap:8px; margin:12px 0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
+    .card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:10px; cursor:pointer; min-height:60px; display:flex; align-items:center; }
+    .card:hover { background:#242424; }
+    #playerWrap { display:none; margin:10px 0 18px; }
+    video { width:100%; max-height:70vh; background:black; border-radius:10px; }
+    .small { font-size:12px; color:#888; margin-top:8px; }
+    .danger { color:#ffb4b4; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>My IPTV</h1>
+  <div class="row">
+    <input id="server" placeholder="Server (https://example.com:8080)" autocomplete="off" />
+    <input id="username" placeholder="Username" autocomplete="off" />
+    <input id="password" type="password" placeholder="Password" autocomplete="off" />
+    <button id="connect">Bağlan</button>
+  </div>
+  <div class="small">Bilgiler bu sayfanın koduna gömülmez. Şifre kalıcı olarak kaydedilmez.</div>
+</header>
+
+<main>
+  <div id="status">Hazır.</div>
+
+  <div id="playerWrap">
+    <video id="video" controls playsinline></video>
+  </div>
+
+  <div id="tabs">
+    <button data-kind="live">Canlı TV</button>
+    <button data-kind="vod">Filmler</button>
+    <button data-kind="series">Diziler</button>
+  </div>
+
+  <div id="content" class="grid"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js"></script>
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const status = $('#status');
+  const content = $('#content');
+  const tabs = $('#tabs');
+  const playerWrap = $('#playerWrap');
+  const video = $('#video');
+  let creds = null, hls = null;
+
+  const setStatus = (msg, err=false) => {
+    status.textContent = msg;
+    status.className = err ? 'danger' : '';
+  };
+
+  function baseUrl(s) {
+    return s.trim().replace(/\/+$/, '');
+  }
+
+  async function api(action='') {
+    const {server, username, password} = creds;
+    const url = `${server}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}${action ? `&action=${encodeURIComponent(action)}` : ''}`;
+    const r = await fetch(url, {cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  async function connect() {
+    const server = baseUrl($('#server').value);
+    const username = $('#username').value.trim();
+    const password = $('#password').value;
+    if (!server || !username || !password) return setStatus('Server, kullanıcı adı ve şifre gerekli.', true);
+    creds = {server, username, password};
+    sessionStorage.setItem('iptv_server', server);
+    sessionStorage.setItem('iptv_user', username);
+    setStatus('Bağlanıyor…');
+    try {
+      const info = await api('');
+      if (!info?.user_info || String(info.user_info.auth) !== '1') throw new Error('Yetkilendirme başarısız');
+      tabs.style.display = 'flex';
+      setStatus(`Bağlandı. Durum: ${info.user_info.status || 'Active'}`);
+      await loadLive();
+    } catch (e) {
+      setStatus(`Bağlantı başarısız: ${e.message}. Sağlayıcı CORS engelliyorsa statik yöntem çalışmaz.`, true);
+    }
+  }
+
+  function render(items, kind) {
+    content.innerHTML = '';
+    for (const item of items.slice(0, 3000)) {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.textContent = item.name || item.title || `ID ${item.stream_id || item.series_id}`;
+      el.onclick = () => playItem(item, kind);
+      content.appendChild(el);
+    }
+  }
+
+  async function loadLive() {
+    setStatus('Canlı kanallar yükleniyor…');
+    try {
+      const items = await api('get_live_streams');
+      render(items || [], 'live');
+      setStatus(`${(items || []).length} canlı kanal.`);
+    } catch (e) { setStatus(`Liste alınamadı: ${e.message}`, true); }
+  }
+
+  async function loadVod() {
+    setStatus('Filmler yükleniyor…');
+    try {
+      const items = await api('get_vod_streams');
+      render(items || [], 'vod');
+      setStatus(`${(items || []).length} film.`);
+    } catch (e) { setStatus(`Liste alınamadı: ${e.message}`, true); }
+  }
+
+  async function loadSeries() {
+    setStatus('Diziler yükleniyor…');
+    try {
+      const items = await api('get_series');
+      render(items || [], 'series');
+      setStatus(`${(items || []).length} dizi.`);
+    } catch (e) { setStatus(`Liste alınamadı: ${e.message}`, true); }
+  }
+
+  async function playItem(item, kind) {
+    if (kind === 'series') {
+      setStatus('Dizi bölüm listesi için sağlayıcı yapısına göre ek destek gerekebilir.', true);
+      return;
+    }
+    const {server, username, password} = creds;
+    const id = item.stream_id;
+    let url;
+    if (kind === 'live') {
+      url = `${server}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.m3u8`;
+    } else {
+      const ext = item.container_extension || 'mp4';
+      url = `${server}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.${ext}`;
+    }
+
+    playerWrap.style.display = 'block';
+    if (hls) { hls.destroy(); hls = null; }
+    video.pause();
+    video.removeAttribute('src');
+
+    if (url.includes('.m3u8') && window.Hls && Hls.isSupported()) {
+      hls = new Hls({ enableWorker:true, lowLatencyMode:true });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) setStatus(`Yayın hatası: ${data.details}`, true);
+      });
+    } else {
+      video.src = url;
+      video.play().catch(()=>{});
+    }
+    playerWrap.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+
+  $('#connect').onclick = connect;
+  tabs.addEventListener('click', e => {
+    const k = e.target.dataset.kind;
+    if (k === 'live') loadLive();
+    if (k === 'vod') loadVod();
+    if (k === 'series') loadSeries();
+  });
+
+  $('#server').value = sessionStorage.getItem('iptv_server') || '';
+  $('#username').value = sessionStorage.getItem('iptv_user') || '';
+})();
+</script>
+</body>
+</html>
